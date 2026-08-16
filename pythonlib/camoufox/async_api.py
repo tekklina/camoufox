@@ -105,9 +105,16 @@ async def AsyncNewBrowser(
         virtual_display = None
 
     if not from_options:
+        profile_dir = kwargs.get('user_data_dir') if persistent_context else None
         from_options = await asyncio.get_event_loop().run_in_executor(
             None,
-            partial(launch_options, headless=headless, debug=debug, **kwargs),
+            partial(
+                launch_options,
+                headless=headless,
+                debug=debug,
+                _persistent_profile_dir=profile_dir,
+                **kwargs,
+            ),
         )
 
     # Playwright's default viewport deadlocks Juggler when the window is spoofed

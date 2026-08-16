@@ -27,6 +27,7 @@ from .geolocation import geoip_allowed, get_geolocation
 from .ip import Proxy, public_ip, valid_ipv4, valid_ipv6
 from .locales import handle_locales
 from .pkgman import OS_NAME, get_path, installed_verstr, launch_path
+from .profile import load_profile_fingerprint, save_profile_fingerprint
 from .virtdisplay import VirtualDisplay
 from ._warnings import LeakWarning
 from .webgl import sample_webgl
@@ -460,6 +461,7 @@ def sync_attach_vd(
 def launch_options(
     *,
     config: Optional[Dict[str, Any]] = None,
+    _persistent_profile_dir: Optional[Union[str, Path]] = None,
     os: Optional[ListOrString] = None,
     block_images: Optional[bool] = None,
     block_webrtc: Optional[bool] = None,
@@ -585,7 +587,9 @@ def launch_options(
         **launch_options (Dict[str, Any]):
             Additional Firefox launch options.
     """
-    # Build the config
+    # Keep warnings scoped to values explicitly supplied by the caller. A
+    # persisted profile contains many manual-looking keys by design.
+    user_config = config
     if config is None:
         config = {}
 
@@ -619,11 +623,23 @@ def launch_options(
 
     # Warn the user for manual config settings
     if not i_know_what_im_doing:
-        warn_manual_config(config)
+        warn_manual_config(user_config or {})
 
-    # Snapshot which domains the USER set before fingerprint generation fills in
+    # A persistent browser profile must also have a persistent fingerprint.
+    # Cookies paired with a freshly randomized device identity can resemble a
+    # hijacked session to fraud systems. Explicit caller config wins so users
+    # can intentionally update individual properties without replacing the
+    # remainder of the saved identity.
+    persisted_profile = None
+    if _persistent_profile_dir:
+        persisted_profile = load_profile_fingerprint(_persistent_profile_dir)
+        config = dict(persisted_profile or {})
+        if user_config:
+            config.update(user_config)
+
+    # Snapshot which domains are fixed before fingerprint generation fills in
     # the rest. The post-generation BrowserForge-correction fixes below must
-    # only touch generated values, never override what the user passed.
+    # not alter caller-supplied or persisted identity values.
     _user_set_navigator = is_domain_set(config, 'navigator.')
     _user_set_screen_window = is_domain_set(config, 'screen.', 'window.')
     _user_set_media_devices = is_domain_set(config, 'mediaDevices:')
@@ -651,36 +667,40 @@ def launch_options(
     else:
         ff_version_str = installed_verstr().split('.', 1)[0]
 
-    # Generate a fingerprint
+    # Generate a fingerprint only when initializing the profile. Loading and
+    # discarding a fresh identity on every restart wastes work and can still
+    # introduce drift when a newly generated value fills a previously absent
+    # key.
     _used_preset = False
-    if fingerprint is not None:
-        # User passed a custom BrowserForge fingerprint
-        if not i_know_what_im_doing:
-            check_custom_fingerprint(fingerprint)
-    elif fingerprint_preset is not None:
-        # User opted into real fingerprint presets
-        if isinstance(fingerprint_preset, dict):
-            preset = fingerprint_preset
-        else:
-            preset = get_random_preset(os=os, ff_version=ff_version_str)
-        if preset:
-            merge_into(config, from_preset(preset, ff_version_str))
-            _used_preset = True
+    if persisted_profile is None:
+        if fingerprint is not None:
+            # User passed a custom BrowserForge fingerprint
+            if not i_know_what_im_doing:
+                check_custom_fingerprint(fingerprint)
+        elif fingerprint_preset is not None:
+            # User opted into real fingerprint presets
+            if isinstance(fingerprint_preset, dict):
+                preset = fingerprint_preset
+            else:
+                preset = get_random_preset(os=os, ff_version=ff_version_str)
+            if preset:
+                merge_into(config, from_preset(preset, ff_version_str))
+                _used_preset = True
 
-    if not _used_preset and fingerprint is None:
-        # Default: BrowserForge synthetic generation (infinite unique fingerprints)
-        fingerprint = generate_fingerprint(
-            screen=screen or get_screen_cons(headless or 'DISPLAY' in env),
-            window=window,
-            os=os,
-        )
+        if not _used_preset and fingerprint is None:
+            # Default: BrowserForge synthetic generation (infinite unique fingerprints)
+            fingerprint = generate_fingerprint(
+                screen=screen or get_screen_cons(headless or 'DISPLAY' in env),
+                window=window,
+                os=os,
+            )
 
-    if not _used_preset and fingerprint is not None:
-        # Inject the BrowserForge fingerprint into the config
-        merge_into(
-            config,
-            from_browserforge(fingerprint, ff_version_str),
-        )
+        if not _used_preset and fingerprint is not None:
+            # Inject the BrowserForge fingerprint into the config
+            merge_into(
+                config,
+                from_browserforge(fingerprint, ff_version_str),
+            )
 
     target_os = get_target_os(config)
 
@@ -863,5 +883,8 @@ def launch_options(
     # Thanks @coryking
     if proxy is not None:
         result["proxy"] = proxy
+
+    if _persistent_profile_dir:
+        save_profile_fingerprint(_persistent_profile_dir, config)
 
     return result

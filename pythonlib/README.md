@@ -304,3 +304,27 @@ Launch a remote Playwright server.
 ## Usage
 
 All of the latest stable documentation is avaliable at [camoufox.com/python](https://camoufox.com/python).
+
+### Persistent profile fingerprints
+
+Persistent browser contexts now keep their generated Camoufox fingerprint next
+to the Firefox profile. Cookies, local storage, canvas/audio/font noise seeds,
+fonts, voices, navigator properties, and WebGL values therefore remain paired
+with the same `user_data_dir` across restarts.
+
+```python
+from camoufox.sync_api import Camoufox
+
+with Camoufox(
+    headless=False,
+    persistent_context=True,
+    user_data_dir='profiles/account-1',
+) as context:
+    page = context.new_page()
+    page.goto('https://example.com')
+```
+
+Camoufox stores the generated identity in
+`profiles/account-1/.camoufox-fingerprint.json`. Close the browser before
+deleting that file when you intentionally want the profile to receive a new
+identity. Different `user_data_dir` values receive independent identities.
